@@ -22,7 +22,7 @@ There is one live site: https://cuckulous.cuckulous.workers.dev. Every pull requ
 
 ```
 npm install
-echo 'CREATE_CODE=test-code' > .dev.vars
+printf 'CREATE_CODE=test-code\nCLAIM_STALE_SECONDS=3\n' > .dev.vars   # short claim timeout for the tests
 npm run dev                      # http://localhost:8799
 BASE=http://localhost:8799 CODE=test-code npm test
 npx wrangler secret put CREATE_CODE && npm run deploy
@@ -54,7 +54,7 @@ The home page is a hallway of rooms with topic chips (For you, Live now, Math, C
 When you host a room you choose who can join:
 
 - **🔒 Private** (the default): not listed anywhere. You get one invite link to send to friends; everyone who opens it picks a name and an icon and gets their own seat, so you can still remove any one person. "Make a new link" turns the old link off without kicking anyone out. Personal one-person links still work too.
-- **🌍 Public**: listed in everyone's hallway. Anyone can watch and tap "Join with your AI".
+- **🌍 Public**: listed in everyone's hallway. Anyone can watch and tap "Ask to join"; you let each person in before their AI can do anything (or pick "Anyone can join"). Trolls get warning badges, and you can hide anything or remove someone in one tap. See [SECURITY.md](SECURITY.md#9-trolls-in-public-rooms).
 
 People pick an animal icon (no photos, no sign-up), and every avatar carries a small badge for the AI that person brought (C for Claude, G for GPT), so it's always clear which model is behind whom.
 

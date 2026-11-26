@@ -1,7 +1,7 @@
 // One Durable Object per room. Everything that happens is an event row, so the
 // watch page and the history are built from the same log.
 import { DurableObject } from "cloudflare:workers";
-import { findSecret } from "./scan.js";
+import { findSecret, flagOf, riskyLink } from "./scan.js";
 import { chainHash } from "./chain.js";
 
 export const LIMITS = {
@@ -18,7 +18,23 @@ export const LIMITS = {
   joinsPerMinute: 10,
   waiters: 40,
   waitSeconds: 25,
+  // Limits that keep one seat from taking over a room:
+  steps: 40, // steps in a room
+  openStepsPerMember: 8, // unfinished steps one non-host member may have added
+  eventsPerMember: 400, // actions one member may take in a room
+  pending: 10, // people waiting to be let in
+  claimStaleSeconds: 600, // a claim with no post for this long opens up for others
 };
+
+// Names that would let someone pass as the host or the room itself.
+const RESERVED_NAME = /\b(host|owner|admin|moderator|mod|system|cuckulous)\b/i;
+// Strips control and invisible characters, collapses spaces.
+export const cleanName = (v) =>
+  String(v ?? "")
+    .normalize("NFKC")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
 // What the hallway files a room under.
 export const TOPICS = ["math", "code", "science", "writing", "other"];
@@ -66,6 +82,15 @@ export class Room extends DurableObject {
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, member_id INTEGER, type TEXT, step_id INTEGER, kind TEXT, body TEXT, model TEXT, prev_hash TEXT, hash TEXT)",
     );
+    // What the host has hidden: a post, a step, or everything a member posted.
+    // Hidden things stay in the history (the chain can't be edited) but are
+    // collapsed on the page and kept out of what other AIs read.
+    this.sql.exec("CREATE TABLE IF NOT EXISTS hidden(kind TEXT, ref INTEGER, at INTEGER, PRIMARY KEY(kind, ref))");
+    try {
+      this.sql.exec("ALTER TABLE steps ADD COLUMN claimed_at INTEGER");
+    } catch {
+      // already there
+    }
     // Rooms created before these columns existed get them, plus a hash backfill.
     for (const [table, col] of [["events", "model"], ["events", "prev_hash"], ["events", "hash"], ["members", "app"], ["members", "model"], ["members", "icon"]]) {
       try {
@@ -221,7 +246,11 @@ export class Room extends DurableObject {
     if (!this.exists()) return err("This room does not exist.");
     const m = this.member(keyHash);
     if (!m) return err("This key is not a member of the room, or it was removed.");
+    if (m.role === "pending") return err("You're waiting for the host to let you in. Nothing can be posted until they do.");
     const now = Date.now();
+    const mine = this.sql.exec("SELECT COUNT(*) AS n FROM events WHERE member_id = ?", m.id).one().n;
+    if (m.role !== "owner" && mine >= LIMITS.eventsPerMember)
+      return err(`You've reached this room's limit of ${LIMITS.eventsPerMember} actions per person.`);
     const recent = (this.writes.get(m.id) || []).filter((t) => now - t < 60_000);
     if (recent.length >= LIMITS.writesPerMinute)
       return err(`Slow down: at most ${LIMITS.writesPerMinute} writes per minute.`);
@@ -247,7 +276,7 @@ export class Room extends DurableObject {
   }
 
   // ---- room lifecycle ----
-  async create({ roomId, title, brief, briefHash, ownerName, ownerKeyHash, ownerIcon = null, startMode = "open", visibility = "private", topic = "other", inviteHash = null }) {
+  async create({ roomId, title, brief, briefHash, ownerName, ownerKeyHash, ownerIcon = null, startMode = "open", visibility = "private", topic = "other", inviteHash = null, joinPolicy = "approve" }) {
     if (this.exists()) return err("Room already exists.");
     const now = Date.now();
     for (const [k, v] of [
@@ -260,6 +289,8 @@ export class Room extends DurableObject {
       ["visibility", visibility === "public" ? "public" : "private"],
       ["topic", TOPICS.includes(topic) ? topic : "other"],
       ["invite_hash", inviteHash || ""],
+      // Public rooms: "approve" (the host lets each person in) or "open" (anyone joins).
+      ["join_policy", joinPolicy === "open" ? "open" : "approve"],
     ])
       this.sql.exec("INSERT INTO meta(k, v) VALUES (?, ?)", k, v);
     this.sql.exec(
@@ -290,15 +321,43 @@ export class Room extends DurableObject {
     }
   }
 
-  // Self-serve join: anyone for a public room, anyone with the invite link for a
-  // private one. Each person still gets their own key, so the owner can remove them.
+  joinPolicy() {
+    return this.meta("join_policy") || "open"; // older rooms behave as before
+  }
+  claimStaleMs() {
+    const fromEnv = Number(this.env && this.env.CLAIM_STALE_SECONDS);
+    return (fromEnv > 0 ? fromEnv : LIMITS.claimStaleSeconds) * 1000;
+  }
+
+  // Why a name can't be used, or null. Names are unique in a room and can't
+  // pass for the host or the room.
+  nameProblem(name) {
+    if (!name) return "Give a name.";
+    if (name.length > LIMITS.name) return `Names are at most ${LIMITS.name} characters.`;
+    if (RESERVED_NAME.test(name)) return "Pick a name without words like host, owner or admin.";
+    if (findSecret(name)) return "That name looks like a secret. Pick another.";
+    const taken = this.sql
+      .exec("SELECT COUNT(*) AS n FROM members WHERE removed_at IS NULL AND lower(name) = lower(?)", name)
+      .one().n;
+    if (taken) return "Someone in this room already has that name. Pick another.";
+    return null;
+  }
+
+  // Self-serve join. Private rooms: anyone with the invite link gets a seat.
+  // Public rooms: anyone, but if the host lets people in ("approve", the
+  // default), the seat waits as "pending" until the host says yes. Each person
+  // gets their own key, so the host can remove any one of them.
   async join({ name, icon, memberKeyHash, inviteHash }) {
     if (!this.exists()) return err("This room does not exist.");
-    if (this.visibility() !== "public") {
+    const isPublic = this.visibility() === "public";
+    if (!isPublic) {
       const want = this.meta("invite_hash");
       if (!inviteHash) return err("This room is private. You need the invite link from the host.");
       if (!want || inviteHash !== want) return err("This invite link isn't valid anymore. Ask the host for a new one.");
     }
+    name = cleanName(name);
+    const problem = this.nameProblem(name);
+    if (problem) return err(problem);
     const now = Date.now();
     this.joins = this.joins.filter((t) => now - t < 60_000);
     if (this.joins.length >= LIMITS.joinsPerMinute) return err("Lots of people are joining right now. Try again in a minute.");
@@ -306,20 +365,83 @@ export class Room extends DurableObject {
     if (active >= LIMITS.members) return err(`This room is full (${LIMITS.members} people).`);
     const count = this.sql.exec("SELECT COUNT(*) AS n FROM events").one().n;
     if (count >= LIMITS.events) return err("This room is full. Start a new room to continue.");
-    const secret = findSecret(name);
-    if (secret) return err("That name looks like a secret. Pick another.");
+    const pending = isPublic && this.joinPolicy() === "approve";
+    if (pending) {
+      const waiting = this.sql.exec("SELECT COUNT(*) AS n FROM members WHERE removed_at IS NULL AND role = 'pending'").one().n;
+      if (waiting >= LIMITS.pending) return err("Too many people are waiting to be let in. Try again later.");
+    }
     this.joins.push(now);
     this.sql.exec(
-      "INSERT INTO members(name, key_hash, role, created_at, icon) VALUES (?, ?, 'member', ?, ?)",
+      "INSERT INTO members(name, key_hash, role, created_at, icon) VALUES (?, ?, ?, ?, ?)",
       name,
       memberKeyHash,
+      pending ? "pending" : "member",
       now,
       cleanIcon(icon),
     );
     const id = this.sql.exec("SELECT last_insert_rowid() AS id").one().id;
-    this.event(id, "joined");
+    this.event(id, pending ? "knocked" : "joined");
     await this.publish();
-    return { ok: true, id };
+    return { ok: true, id, pending };
+  }
+
+  // The host lets a waiting person in, or turns them away.
+  async admit(ownerKeyHash, memberId, accept) {
+    const w = this.writer(ownerKeyHash);
+    if (w.error) return w;
+    if (w.member.role !== "owner") return err("Only the host can let people in.");
+    const t = this.sql.exec("SELECT * FROM members WHERE id = ? AND removed_at IS NULL", memberId).toArray()[0];
+    if (!t || t.role !== "pending") return err("Nobody by that id is waiting.");
+    if (accept) this.sql.exec("UPDATE members SET role = 'member' WHERE id = ?", memberId);
+    else this.sql.exec("UPDATE members SET removed_at = ? WHERE id = ?", Date.now(), memberId);
+    this.event(w.member.id, accept ? "admitted" : "declined", null, null, String(memberId));
+    await this.publish();
+    return { ok: true };
+  }
+
+  // The host hides (or shows again) a post, a step, or everything a member posted.
+  async hide(ownerKeyHash, kind, ref, hidden = true) {
+    const w = this.writer(ownerKeyHash);
+    if (w.error) return w;
+    if (w.member.role !== "owner") return err("Only the host can hide things.");
+    if (!["post", "step", "member"].includes(kind)) return err("kind must be post, step or member.");
+    ref = Number(ref);
+    const exists =
+      kind === "post" ? this.sql.exec("SELECT COUNT(*) AS n FROM events WHERE id = ? AND type = 'post'", ref).one().n
+      : kind === "step" ? (this.step(ref) ? 1 : 0)
+      : this.sql.exec("SELECT COUNT(*) AS n FROM members WHERE id = ? AND role != 'owner'", ref).one().n;
+    if (!exists) return err(`No such ${kind}.`);
+    if (hidden) {
+      this.sql.exec("INSERT INTO hidden(kind, ref, at) VALUES (?, ?, ?) ON CONFLICT(kind, ref) DO NOTHING", kind, ref, Date.now());
+      if (kind === "step") this.sql.exec("UPDATE steps SET status = CASE WHEN status = 'claimed' THEN 'open' ELSE status END, claimed_by = CASE WHEN status = 'claimed' THEN NULL ELSE claimed_by END WHERE id = ?", ref);
+    } else {
+      this.sql.exec("DELETE FROM hidden WHERE kind = ? AND ref = ?", kind, ref);
+    }
+    this.event(w.member.id, hidden ? "hidden" : "unhidden", kind === "step" ? ref : null, kind, String(ref));
+    await this.publish();
+    return { ok: true };
+  }
+
+  // The host takes a step back from whoever holds it, so someone else can.
+  async free(ownerKeyHash, stepId) {
+    const w = this.writer(ownerKeyHash);
+    if (w.error) return w;
+    if (w.member.role !== "owner") return err("Only the host can free a step.");
+    const s = this.step(stepId);
+    if (!s || s.status !== "claimed") return err("That step isn't held by anyone.");
+    this.sql.exec("UPDATE steps SET status = 'open', claimed_by = NULL, claimed_at = NULL WHERE id = ?", stepId);
+    this.event(w.member.id, "freed", stepId, null, String(s.claimed_by));
+    await this.publish();
+    return { ok: true };
+  }
+
+  hiddenSets() {
+    const rows = this.sql.exec("SELECT kind, ref FROM hidden").toArray();
+    const pick = (k) => rows.filter((r) => r.kind === k).map((r) => r.ref);
+    return { posts: pick("post"), steps: pick("step"), members: pick("member") };
+  }
+  isHiddenStep(id) {
+    return !!this.sql.exec("SELECT COUNT(*) AS n FROM hidden WHERE kind = 'step' AND ref = ?", id).one().n;
   }
 
   // A new invite link for a private room. The old one stops working.
@@ -346,6 +468,9 @@ export class Room extends DurableObject {
       .exec("SELECT COUNT(*) AS n FROM members WHERE removed_at IS NULL")
       .one().n;
     if (active >= LIMITS.members) return err(`A room holds at most ${LIMITS.members} members.`);
+    name = cleanName(name);
+    const problem = this.nameProblem(name);
+    if (problem) return err(problem);
     this.sql.exec(
       "INSERT INTO members(name, key_hash, role, created_at) VALUES (?, ?, 'member', ?)",
       name,
@@ -358,7 +483,7 @@ export class Room extends DurableObject {
     return { ok: true, id };
   }
 
-  async remove(ownerKeyHash, memberId) {
+  async remove(ownerKeyHash, memberId, hidePosts = false) {
     const w = this.writer(ownerKeyHash);
     if (w.error) return w;
     if (w.member.role !== "owner") return err("Only the room owner can remove people.");
@@ -371,6 +496,10 @@ export class Room extends DurableObject {
       memberId,
     );
     this.event(w.member.id, "removed", null, null, String(memberId));
+    if (hidePosts) {
+      this.sql.exec("INSERT INTO hidden(kind, ref, at) VALUES ('member', ?, ?) ON CONFLICT(kind, ref) DO NOTHING", memberId, Date.now());
+      this.event(w.member.id, "hidden", null, "member", String(memberId));
+    }
     await this.publish();
     return { ok: true };
   }
@@ -399,6 +528,15 @@ export class Room extends DurableObject {
     if (detail.length > LIMITS.body) return err(`Details are at most ${LIMITS.body} characters.`);
     const secret = findSecret(title + "\n" + detail);
     if (secret) return err(`Blocked: this looks like it contains ${secret}. Nothing was saved.`);
+    const total = this.sql.exec("SELECT COUNT(*) AS n FROM steps").one().n;
+    if (total >= LIMITS.steps) return err(`A room holds at most ${LIMITS.steps} steps.`);
+    if (w.member.role !== "owner") {
+      const openMine = this.sql
+        .exec("SELECT COUNT(*) AS n FROM steps WHERE created_by = ? AND status != 'done' AND id NOT IN (SELECT ref FROM hidden WHERE kind = 'step')", w.member.id)
+        .one().n;
+      if (openMine >= LIMITS.openStepsPerMember)
+        return err(`You already have ${LIMITS.openStepsPerMember} unfinished steps on the board. Finish some before adding more.`);
+    }
     this.sql.exec(
       "INSERT INTO steps(title, detail, created_by, created_at, status) VALUES (?, ?, ?, ?, 'open')",
       title,
@@ -419,15 +557,38 @@ export class Room extends DurableObject {
     if (wait) return wait;
     const s = this.step(stepId);
     if (!s) return err("No such step.");
+    if (this.isHiddenStep(stepId)) return err("The host hid that step.");
     if (s.status === "done") return err("That step is already merged.");
-    if (s.status === "claimed" && s.claimed_by !== w.member.id)
-      return err("Someone else has claimed that step. Pick another, or post a note on it.");
+    const now = Date.now();
+    // Has this member posted on a step since they claimed it?
+    const progressed = (step, memberId, kind = null) =>
+      this.sql
+        .exec(`SELECT COUNT(*) AS n FROM events WHERE type = 'post' AND step_id = ? AND member_id = ? AND ts >= ?${kind ? " AND kind = ?" : ""}`, ...[step.id, memberId, step.claimed_at || 0, ...(kind ? [kind] : [])])
+        .one().n > 0;
+    let tookOver = null;
+    if (s.status === "claimed" && s.claimed_by !== w.member.id) {
+      const stale = s.claimed_at && now - s.claimed_at > this.claimStaleMs() && !progressed(s, s.claimed_by);
+      if (!stale) {
+        const mins = Math.round(this.claimStaleMs() / 60000);
+        return err(`Someone else is working on that step. If they post nothing for ${mins} minutes, it opens up. Pick another, or post a note on it.`);
+      }
+      tookOver = s.claimed_by;
+    }
+    // One step at a time: finish (post a result on) the step you hold first.
+    if (s.claimed_by !== w.member.id) {
+      const held = this.sql
+        .exec("SELECT * FROM steps WHERE status = 'claimed' AND claimed_by = ? AND id != ? AND id NOT IN (SELECT ref FROM hidden WHERE kind = 'step')", w.member.id, stepId)
+        .toArray()
+        .find((h) => !progressed(h, w.member.id, "result"));
+      if (held) return err(`You're holding step #${held.id}. Post a result on it before claiming another (one step at a time).`);
+    }
     this.sql.exec(
-      "UPDATE steps SET status = 'claimed', claimed_by = ? WHERE id = ?",
+      "UPDATE steps SET status = 'claimed', claimed_by = ?, claimed_at = ? WHERE id = ?",
       w.member.id,
+      now,
       stepId,
     );
-    this.event(w.member.id, "claimed", stepId, null, null, this.noteModel(keyHash, model));
+    this.event(w.member.id, "claimed", stepId, tookOver ? "takeover" : null, tookOver ? String(tookOver) : null, this.noteModel(keyHash, model));
     await this.publish();
     return { ok: true };
   }
@@ -442,6 +603,7 @@ export class Room extends DurableObject {
     if (!body) return err("Empty post.");
     if (body.length > LIMITS.body) return err(`Posts are at most ${LIMITS.body} characters.`);
     if (stepId != null && !this.step(stepId)) return err("No such step.");
+    if (stepId != null && this.isHiddenStep(stepId)) return err("The host hid that step.");
     const secret = findSecret(body);
     if (secret) return err(`Blocked: this looks like it contains ${secret}. Nothing was saved.`);
     const id = this.event(w.member.id, "post", stepId ?? null, kind, body, this.noteModel(keyHash, model));
@@ -559,7 +721,7 @@ export class Room extends DurableObject {
   async summary() {
     if (!this.exists()) return err("This room does not exist.");
     const members = this.sql
-      .exec("SELECT id, name, role, model, icon FROM members WHERE removed_at IS NULL ORDER BY id")
+      .exec("SELECT id, name, role, model, icon FROM members WHERE removed_at IS NULL AND role != 'pending' ORDER BY id")
       .toArray();
     const posters = new Set(
       this.sql.exec("SELECT DISTINCT member_id FROM events WHERE type = 'post'").toArray().map((r) => r.member_id),
@@ -569,6 +731,7 @@ export class Room extends DurableObject {
       title: this.meta("title"),
       topic: this.meta("topic") || "other",
       visibility: this.visibility(),
+      join_policy: this.joinPolicy(),
       created_at: Number(this.meta("created_at")),
       started: this.started(),
       members: members.map((m) => ({ name: m.name, role: m.role, model: m.model, icon: m.icon, posted: posters.has(m.id) })),
@@ -593,6 +756,18 @@ export class Room extends DurableObject {
       : this.sql
           .exec("SELECT * FROM events WHERE id > ? ORDER BY id LIMIT 500", Number(since) || 0)
           .toArray();
+    // Mark member text that gives orders to AIs or claims to speak for the host,
+    // so the page can show a badge. The host's own seat is never flagged.
+    const roleOf = Object.fromEntries(members.map((m) => [m.id, m.role]));
+    const hostName = members.find((m) => m.role === "owner")?.name || "";
+    for (const e of events) {
+      if (!["post", "step_added", "link_added"].includes(e.type)) continue;
+      const flag = flagOf(e.body, roleOf[e.member_id], hostName);
+      if (flag) {
+        e.flag = flag;
+        e.flagged = true;
+      }
+    }
     const last = this.sql.exec("SELECT COALESCE(MAX(id), 0) AS id FROM events").one().id;
     return {
       title: this.meta("title"),
@@ -602,13 +777,17 @@ export class Room extends DurableObject {
       start_mode: this.startMode(),
       started: this.started(),
       visibility: this.visibility(),
+      join_policy: this.joinPolicy(),
       topic: this.meta("topic") || "other",
+      hidden: this.hiddenSets(),
+      claim_stale_seconds: Math.round(this.claimStaleMs() / 1000),
       started_at: Number(this.meta("started_at")) || null,
       members,
       steps,
       links: this.sql
         .exec("SELECT id, title, url, added_by, created_at FROM links WHERE removed_at IS NULL ORDER BY id")
-        .toArray(),
+        .toArray()
+        .map((l) => ({ ...l, risky: riskyLink(l.url) })),
       events,
       last_event_id: last,
     };

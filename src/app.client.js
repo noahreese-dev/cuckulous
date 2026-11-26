@@ -33,6 +33,20 @@
     el.textContent = s || "";
     return el;
   };
+  // Long posts fold so one person can't bury the floor.
+  const longText = (s, cls = "text") => {
+    s = s || "";
+    if (s.length <= 900) return text(s, cls);
+    const box = h("div", {}, text(s.slice(0, 700) + "…", cls));
+    box.append(h("button", { class: "mini earlier", type: "button", onclick: () => box.replaceWith(text(s, cls)) }, `Show all ${s.length.toLocaleString()} characters`));
+    return box;
+  };
+  // Why a member's text has a warning badge (set by the server).
+  const FLAG_TEXT = {
+    orders: "Looks like it's trying to give orders to AIs. The other AIs are warned not to follow it.",
+    host_claim: "Claims to speak for the host, but the host didn't write it. The other AIs are warned not to act on it.",
+  };
+  const flagLine = (e) => e && e.flagged ? h("div", { class: "flag" }, "⚠ " + (FLAG_TEXT[e.flag] || FLAG_TEXT.orders)) : null;
   const ago = (ts) => {
     const s = Math.round((Date.now() - ts) / 1000);
     if (s < 60) return "just now";
@@ -206,7 +220,7 @@
       title.textContent = s.title;
       const shown = people.slice(0, 4);
       const el = h("a", { class: "hcard", href: r ? linkFor(r) : `/r/${s.id}` },
-        h("p", { class: "over" }, h("span", { class: "house" }), [topicLabel(s.topic), s.visibility === "public" ? "public" : "private", roleWord].filter(Boolean).join(" · ")),
+        h("p", { class: "over" }, h("span", { class: "house" }), [topicLabel(s.topic), s.visibility === "public" ? (s.join_policy === "approve" && !roleWord ? "public · ask to join" : "public") : "private", roleWord].filter(Boolean).join(" · ")),
         title,
         h("div", { class: "hbody" },
           h("div", { class: "stack" }, ...shown.slice(0, 2).map((m) => avatar(m.name, "", m.icon, m.model))),
@@ -281,8 +295,10 @@
         ["manual", "When I press Start", "Nobody starts until you press Start. Best for timed races."],
       ];
       const modeBox = h("div", { class: "modes", hidden: "" }, ...MODES.map(([v, t, d], i) => opt("start_mode", v, t, d, i === 0)));
-      const VIS = { private: "Only people you send the invite link to can join.", public: "Listed in the hallway. Anyone can watch and bring their AI." };
+      const VIS = { private: "Only people you send the invite link to can join.", public: "Listed in the hallway. Anyone can watch. With \"I let people in\", you approve each person before their AI can do anything." };
       const visHint = h("p", { class: "hint" }, VIS.private);
+      const policy = h("div", { class: "tpick", hidden: "" }, ...[["approve", "I let people in"], ["open", "Anyone can join"]].map(([v, l], i) =>
+        h("label", { class: "tpill" }, h("input", { type: "radio", name: "join_policy", value: v, checked: i === 0 ? "" : null }), h("span", {}, l))));
       f.append(
         h("h3", {}, "Start a room"),
         h("label", {}, "What's the problem?", h("input", { name: "title", required: true, maxlength: "200", placeholder: "Is 2^n + 1 ever a perfect cube?" })),
@@ -290,8 +306,9 @@
           h("textarea", { name: "brief", required: true, maxlength: "8000", rows: "5", placeholder: "Problem: ...\n\nRules: break it into steps, claim before working, show every calculation, post results with a check." })),
         h("div", { class: "mlabel" }, "Who can join?"),
         h("div", { class: "tpick" }, ...[["private", "Private"], ["public", "Public"]].map(([v, l], i) =>
-          h("label", { class: "tpill" }, h("input", { type: "radio", name: "visibility", value: v, checked: i === 0 ? "" : null, onchange: () => (visHint.textContent = VIS[v]) }), h("span", {}, l)))),
+          h("label", { class: "tpill" }, h("input", { type: "radio", name: "visibility", value: v, checked: i === 0 ? "" : null, onchange: () => { visHint.textContent = VIS[v]; policy.hidden = v !== "public"; } }), h("span", {}, l)))),
         visHint,
+        policy,
         h("div", { class: "mlabel" }, "Topic"),
         h("div", { class: "tpick" }, ...TOPICS.map(([k, , l], i) =>
           h("label", { class: "tpill" }, h("input", { type: "radio", name: "topic", value: k, checked: i === 0 ? "" : null }), h("span", {}, l)))),
@@ -472,8 +489,9 @@
             class: "ghost", type: "button",
             onclick: async () => {
               if (!confirm(`Remove ${m.name}? Their AI loses access right away.`)) return;
+              const hide = confirm(`Also hide everything ${m.name} posted? It stays in the history, but people and AIs won't see it.`);
               try {
-                await api(`/api/r/${roomId}/remove`, { method: "POST", ...withKey, body: JSON.stringify({ member_id: m.id }) });
+                await api(`/api/r/${roomId}/remove`, { method: "POST", ...withKey, body: JSON.stringify({ member_id: m.id, hide }) });
                 await poll();
                 fill();
               } catch (x) { alert(x.message); }
@@ -522,7 +540,8 @@
     const err = h("p", { class: "error" });
     const briefBox = text(state.brief, "text warn");
     briefBox.style.background = "var(--hall)";
-    const inRoom = state.members.filter((m) => !m.removed);
+    const inRoom = state.members.filter((m) => !m.removed && m.role !== "pending");
+    const knocks = state.visibility === "public" && state.joinPolicy === "approve";
     const go = h("button", {
       class: "go", type: "button",
       onclick: async () => {
@@ -544,7 +563,7 @@
           go.disabled = false;
         }
       },
-    }, "Join and connect my AI");
+    }, knocks ? "Ask to join" : "Join and connect my AI");
     openSheet(
       h("h3", {}, "Bring your AI to this room"),
       h("p", {}, "Your AI will work on this brief, together with everyone else's:"),
@@ -557,7 +576,9 @@
       picker,
       go,
       err,
-      h("p", { class: "hint" }, "No sign-up and no API key. Next you add the room to your own ChatGPT or Claude, and you'll see exactly what your AI is told before it does anything."));
+      h("p", { class: "hint" }, knocks
+        ? "The host lets each person in. As soon as they do, this page shows you how to connect your ChatGPT or Claude. No sign-up, no API key."
+        : "No sign-up and no API key. Next you add the room to your own ChatGPT or Claude, and you'll see exactly what your AI is told before it does anything."));
     input.focus();
   }
 
@@ -654,14 +675,17 @@
     }
     if (isOwner()) out.push(row("➕", h("span", { class: "lt" }, "Invite someone"), "Make a private join link.", mini("Open", shareSheet)));
     out.push(h("h4", {}, "Pinned"));
-    if (!state.links.length) out.push(h("p", { class: "muted" }, "Nothing pinned yet. Pin the repo, the live site or a paper so everyone can find it."));
-    for (const l of state.links) {
+    const hd = hidSet();
+    const pinned = state.links.filter((x) => !hd.members.includes(x.added_by));
+    if (!pinned.length) out.push(h("p", { class: "muted" }, "Nothing pinned yet. Pin the repo, the live site or a paper so everyone can find it."));
+    for (const l of pinned) {
       const a = h("a", { class: "lt", href: l.url, target: "_blank", rel: "noopener noreferrer nofollow" });
       a.textContent = l.title;
       let host = "";
       try { host = new URL(l.url).hostname.replace(/^www\./, ""); } catch {}
       const mine = me && (isOwner() || l.added_by === me.id);
-      out.push(row("📎", a, `${host} · pinned by ${nameOf(l.added_by)}`,
+      // Always show where a link really goes, and warn when it looks like a trap.
+      out.push(row(l.risky ? "⚠️" : "📎", a, l.risky ? h("span", {}, `${host} · pinned by ${nameOf(l.added_by)}`, h("span", { class: "risky" }, "Check this address before opening it, and never sign in there.")) : `${host} · pinned by ${nameOf(l.added_by)}`,
         mini("Copy", () => copy(l.url)),
         mine && mini("✕", async () => {
           if (!confirm(`Unpin "${l.title}"?`)) return;
@@ -693,13 +717,18 @@
     return out;
   }
 
+  // What the host hid doesn't count toward any metric (it stays in the history).
+  const hidSet = () => state.hidden || { posts: [], steps: [], members: [] };
+  const liveSteps = () => { const hd = hidSet(); return state.steps.filter((st) => !hd.steps.includes(st.id) && !hd.members.includes(st.created_by)); };
+  const livePost = (e) => { const hd = hidSet(); return !hd.posts.includes(e.id) && !hd.members.includes(e.member_id); };
+
   function progressView() {
-    const steps = state.steps;
+    const steps = liveSteps();
     const done = steps.filter((x) => x.status === "done");
     const claimed = steps.filter((x) => x.status === "claimed");
     const open = steps.filter((x) => x.status === "open");
     const pct = steps.length ? Math.round((done.length / steps.length) * 100) : 0;
-    const posts = state.events.filter((e) => e.type === "post");
+    const posts = state.events.filter((e) => e.type === "post" && livePost(e));
     const title = (st) => { const t = h("span", { class: "tt" }); t.textContent = st.title; return t; };
     const out = [
       h("div", { class: "pct" }, h("b", {}, `${pct}%`), h("span", {}, steps.length ? `${done.length} of ${steps.length} steps merged` : "No steps yet")),
@@ -722,13 +751,39 @@
         out.push(h("button", { class: "trow", type: "button", onclick: () => goToStep(st.id) },
           avatarOf(st.claimed_by), title(st), h("span", { class: "tm" }, nameOf(st.claimed_by))));
     }
+    // Scoreboard: one row per person and their AI, with three numbers anyone can follow.
     out.push(h("h4", {}, "Who's doing what"));
-    for (const m of state.members.filter((x) => !x.removed)) {
-      const n = posts.filter((p) => p.member_id === m.id).length;
-      const merged = done.filter((st) => lastPostOf(st)?.member_id === m.id).length;
-      out.push(h("div", { class: "trow" }, avatarOf(m.id), h("span", { class: "tt" }, m.name, m.model ? h("div", { class: "ld" }, m.model) : null),
-        h("span", { class: "tm" }, `${n} post${n === 1 ? "" : "s"} · ${merged} merged`)));
+    const solvedOf = (id) => done.filter((st) => lastPostOf(st)?.member_id === id).length;
+    const people = state.members.filter((x) => !x.removed && x.role !== "pending")
+      .map((m) => ({ m, solved: solvedOf(m.id), posts: posts.filter((p) => p.member_id === m.id && p.kind !== "chat").length,
+        flagged: state.events.filter((e) => e.member_id === m.id && e.flagged).length,
+        holds: steps.find((x) => x.status === "claimed" && x.claimed_by === m.id),
+        last: [...state.events].reverse().find((e) => e.member_id === m.id && e.model) }))
+      .sort((a, b) => b.solved - a.solved || b.posts - a.posts);
+    const removeMember = async (m) => {
+      if (!confirm(`Remove ${m.name}? Their AI loses access right away.`)) return;
+      const hide = confirm(`Also hide everything ${m.name} posted? It stays in the history, but people and AIs won't see it.`);
+      try {
+        await api(`/api/r/${roomId}/remove`, { method: "POST", ...withKey, body: JSON.stringify({ member_id: m.id, hide }) });
+        await poll();
+      } catch (x) { alert(x.message); }
+    };
+    for (const r of people) {
+      const pres = r.m.presence || "new";
+      const now = pres === "working" ? (r.holds ? `working on #${r.holds.id}` : "working")
+        : pres === "waiting" ? "waiting for news" : pres === "away" ? (r.holds ? `away, holds #${r.holds.id}` : "away")
+        : pres === "connected" ? "connected" : "not connected";
+      const odd = mismatch(r.m);
+      out.push(h("div", { class: "score" }, avatarOf(r.m.id),
+        h("div", { class: "who" }, h("b", {}, r.m.name, r.m.role === "owner" ? " ✳" : ""),
+          h("i", {}, [r.m.model ? `${r.m.model}${odd ? " (doesn't match its app)" : ""}` : "AI not reported", now, r.last ? `last ${ago(r.last.ts)}${ago(r.last.ts) === "just now" ? "" : " ago"}` : null].filter(Boolean).join(" · "))),
+        h("div", { class: "nums" },
+          h("div", {}, h("b", {}, String(r.solved)), h("span", {}, "solved")),
+          h("div", {}, h("b", {}, String(r.posts)), h("span", {}, "posts")),
+          r.flagged > 0 && h("div", { class: "flagn" }, h("b", {}, String(r.flagged)), h("span", {}, "flagged"))),
+        isOwner() && r.m.role !== "owner" && h("button", { class: "mini x", type: "button", title: `Remove ${r.m.name}`, "aria-label": `Remove ${r.m.name}`, onclick: () => removeMember(r.m) }, "✕")));
     }
+    out.push(h("p", { class: "score-note" }, "Solved = steps the host merged with that person's post. Flagged = posts that give orders to other AIs or pretend to speak for the host. Anything the host hid doesn't count. Each AI reports its own model name; the app comes from the connector it joined with."));
     out.push(h("div", { class: "team-actions" },
       h("button", { class: "ghost", type: "button", onclick: () => { closeAll(); teamSheet(); } }, "How they're working together"),
       h("button", { class: "ghost", type: "button", onclick: () => { closeAll(); breakdownSheet(); } }, "Who did what, in numbers")));
@@ -781,19 +836,36 @@
       invited: `invited ${nameOf(Number(e.body))}`,
       removed: `removed ${nameOf(Number(e.body))}`,
       step_added: `added step #${e.step_id}`,
-      claimed: `claimed step #${e.step_id}`,
+      claimed: e.kind === "takeover" ? `took over stalled step #${e.step_id}` : `claimed step #${e.step_id}`,
       merged: `merged step #${e.step_id}`,
       started: e.body === "joined" ? "joined, so the room started" : "started the room",
       post: e.kind === "chat" ? "said in chat" : `posted ${e.kind}${e.step_id ? ` on #${e.step_id}` : ""}`,
       link_added: "pinned a link",
       link_removed: "unpinned a link",
+      joined: "joined",
+      knocked: "asked to join",
+      admitted: `let ${nameOf(Number(e.body))} in`,
+      declined: `turned ${nameOf(Number(e.body))} away`,
+      hidden: e.kind === "member" ? `hid everything ${nameOf(Number(e.body))} posted` : `hid a ${e.kind}`,
+      unhidden: `showed a ${e.kind} again`,
+      freed: `freed step #${e.step_id}`,
     })[e.type] || e.type;
+    const hid = state.hidden || { posts: [], steps: [], members: [] };
+    const hiddenBody = (e) => hid.members.includes(e.member_id) || (e.type === "post" && hid.posts.includes(e.id)) || (e.type === "step_added" && hid.steps.includes(e.step_id));
+    const body = (e) => {
+      if (!["post", "step_added", "link_added", "link_removed"].includes(e.type)) return null;
+      if (!hiddenBody(e)) return text(e.body, "text ftext");
+      // Folded, not deleted: the full record stays in the log so it can still be verified.
+      const box = h("div", { class: "hidden-line" }, "Hidden by the host");
+      box.append(h("button", { class: "mini", type: "button", onclick: () => box.replaceWith(text(e.body, "text ftext")) }, "Show anyway"));
+      return box;
+    };
     const feed = h("ol", { class: "feed" });
     for (const e of [...state.events].reverse().slice(0, 300)) {
       feed.append(h("li", {}, avatarOf(e.member_id),
         h("div", { style: "flex:1;min-width:0" },
-          h("div", {}, h("strong", {}, nameOf(e.member_id)), mdl(aiFor(e)), " ", verb(e), " ", h("span", { class: "when" }, ago(e.ts))),
-          ["post", "step_added", "link_added", "link_removed"].includes(e.type) ? text(e.body, "text ftext") : null)));
+          h("div", {}, h("strong", {}, nameOf(e.member_id)), mdl(aiFor(e)), " ", verb(e), " ", h("span", { class: "when" }, ago(e.ts)), e.flagged ? h("span", { class: "flag-dot", title: FLAG_TEXT[e.flag] || FLAG_TEXT.orders }, " ⚠") : null),
+          body(e))));
     }
     const out = h("p", { class: "verify-out hint" }, "Each entry is chained to the one before it by a SHA-256 hash, starting from the brief, so nothing can be edited quietly.");
     return [
@@ -839,7 +911,7 @@
   // ---------- chat: people type, agents read it ----------
   let chatList = null;
   function chatItems() {
-    return state.events.filter((e) => e.type === "post" && !e.step_id);
+    return state.events.filter((e) => e.type === "post" && !e.step_id && livePost(e));
   }
   function fillChat() {
     if (!chatList || !document.body.contains(chatList)) return (chatList = null);
@@ -852,7 +924,8 @@
       chatList.append(h("div", { class: `post ${human ? "human" : ""}` }, avatarOf(p.member_id),
         h("div", { class: "bubble" },
           h("div", { class: "by" }, nameOf(p.member_id), human ? null : mdl(aiFor(p)), h("span", { class: `kind ${p.kind}` }, human ? "typed" : `AI · ${p.kind}`), h("span", {}, ago(p.ts))),
-          text(p.body))));
+          flagLine(p),
+          longText(p.body))));
     }
     math(chatList);
     if (atBottom) chatList.scrollTop = chatList.scrollHeight;
@@ -955,7 +1028,11 @@
     }, "ghost");
     const others = state.members.filter((m) => !m.removed && m.id !== me.id);
     let title, line, actions = [], tone = "ok", needed = false;
-    if (me.presence === "new") {
+    if (me.role === "pending") {
+      tone = "wait";
+      title = "Waiting for the host to let you in";
+      line = "Keep this page open; it updates by itself. As soon as you're in, it shows you how to connect your AI.";
+    } else if (me.presence === "new") {
       tone = "todo";
       title = "Connect your AI";
       line = "Add this room to your ChatGPT or Claude, then tell it to start. It takes about two minutes.";
@@ -1000,6 +1077,12 @@
       title = `Your ${app} is working`;
       line = held ? `It's on #${held.id}: ${held.title}` : "It's in the room right now.";
     }
+    // The moment the host lets you in, show how to connect.
+    if (renderMine.lastRole === "pending" && me.role !== "pending") {
+      toast("You're in!");
+      setTimeout(() => connectSheet(`${origin}/mcp/${roomId}/${key}`), 300);
+    }
+    renderMine.lastRole = me.role;
     card.className = `minecard ${tone}`;
     // h() skips false/null children; DOM append() would print them, so go through h().
     card.append(h("div", {},
@@ -1010,6 +1093,28 @@
           m.presence === "new" ? h("span", { class: "st-no" }, "not connected yet") : h("span", { class: "st-ok" }, `✓ ${m.presence === "waiting" ? "waiting in the room" : "AI connected"}`))))));
     math(card);
     document.title = (needed ? "● " : "") + base;
+  }
+
+  // ---------- people asking to join (host only) ----------
+  function renderKnock() {
+    const sec = $("#knock-sec");
+    const waiting = isOwner() ? state.members.filter((m) => !m.removed && m.role === "pending") : [];
+    sec.hidden = !waiting.length;
+    if (!waiting.length) return;
+    const card = $("#knockcard");
+    card.textContent = "";
+    card.append(h("div", {},
+      h("h3", {}, waiting.length === 1 ? "1 person wants to join" : `${waiting.length} people want to join`),
+      h("p", {}, "Only let in people you're happy to have working in the room. You can remove anyone later."),
+      ...waiting.map((m) => h("div", { class: "ready" }, avatarOf(m.id), h("span", { class: "nm" }, m.name),
+        h("button", { class: "go small", type: "button", onclick: () => hostAct("admit", { member_id: m.id, accept: true }) }, "Let in"),
+        h("button", { class: "ghost small", type: "button", onclick: () => hostAct("admit", { member_id: m.id, accept: false }) }, "No"))),
+      // A troll can fill the queue with fake knocks; one tap clears it.
+      waiting.length > 2 && h("button", { class: "linkish", type: "button", onclick: async () => {
+        if (!confirm(`Turn all ${waiting.length} people away?`)) return;
+        for (const m of waiting) await api(`/api/r/${roomId}/admit`, { method: "POST", ...withKey, body: JSON.stringify({ member_id: m.id, accept: false }) }).catch(() => {});
+        poll();
+      } }, "Turn everyone away")));
   }
 
   // ---------- waiting to start ----------
@@ -1183,7 +1288,7 @@
       chip(`${tw.lanesIds.length > 1 ? Math.round((100 * tw.parMs) / Math.max(1, clock)) : 0}%`, "with 2+ AIs at once", "Share of that time when two or more AIs were each holding a step"),
       chip(String(tw.handoffs), tw.handoffs === 1 ? "handoff" : "handoffs", "Steps one AI proposed and a different AI took on"),
       chip(String(tw.crossChecks), "weigh-ins", "Posts on a step someone else was holding: checks, questions, alternative attempts"),
-      chip(`${merged}/${state.steps.length}`, "steps merged", "Steps the host accepted"),
+      chip(`${merged}/${liveSteps().length}`, "steps merged", "Steps the host accepted"),
       chip(String(tw.models.size), tw.models.size === 1 ? "model" : "models", [...tw.models].join(", ") || "No model reported yet")));
 
     // Timeline: one lane per person and their AI.
@@ -1350,23 +1455,37 @@
       const seat = store.rooms.find((r) => r.id === roomId && r.key && (r.role === "member" || r.role === "owner"));
       const canJoin = state.loaded && (state.visibility === "public" || (mode === "invite" && key));
       if (seat) right.append(h("a", { class: "joinpill", href: seat.role === "owner" ? `/r/${roomId}/admin#${seat.key}` : `/r/${roomId}/join#${seat.key}` }, "Go to my seat"));
-      else if (canJoin) right.append(h("button", { class: "joinpill", type: "button", onclick: joinSheet }, "✋ Join with your AI"));
+      else if (canJoin) right.append(h("button", { class: "joinpill", type: "button", onclick: joinSheet }, state.visibility === "public" && state.joinPolicy === "approve" ? "✋ Ask to join" : "✋ Join with your AI"));
     }
   }
 
+  // Says it's one vendor's model but connected through another vendor's app.
+  const vendor = (t) => (!t ? null : /claude|anthropic/i.test(t) ? "claude" : /gpt|openai|chatgpt|\bo\d/i.test(t) ? "openai" : /gemini|google/i.test(t) ? "google" : null);
+  const mismatch = (m) => { const a = vendor(m.model); const b = vendor(m.app); return !!(a && b && a !== b); };
+  const hostAct = (path, body) => api(`/api/r/${roomId}/${path}`, { method: "POST", ...withKey, body: JSON.stringify(body) }).then(poll).catch((x) => alert(x.message));
+  const expanded = new Set(); // steps whose older posts are shown
+
   function render() {
     const members = byId();
-    const active = state.members.filter((m) => !m.removed);
-    const lastBy = {};
-    const did = new Set();
-    for (const e of state.events) {
-      lastBy[e.member_id] = e.ts;
-      if (["post", "claimed", "step_added", "merged"].includes(e.type)) did.add(e.member_id);
+    const active = state.members.filter((m) => !m.removed && m.role !== "pending");
+    const hid = state.hidden || { posts: [], steps: [], members: [] };
+    const hidPost = (p) => hid.posts.includes(p.id) || hid.members.includes(p.member_id);
+    const hidStep = (st) => hid.steps.includes(st.id) || hid.members.includes(st.created_by);
+    const flaggedStep = new Map(state.events.filter((e) => e.type === "step_added" && e.flagged).map((e) => [e.step_id, e]));
+    const posts = state.events.filter((e) => e.type === "post");
+    const postById = new Map(posts.map((p) => [p.id, p]));
+    // Solved = steps the host merged with this member's post. The plainest measure of accepted work.
+    const solvedBy = {};
+    for (const st of state.steps) {
+      const p = st.merged_event && postById.get(st.merged_event);
+      if (p) solvedBy[p.member_id] = (solvedBy[p.member_id] || 0) + 1;
     }
+    const did = new Set();
+    for (const e of state.events) if (["post", "claimed", "step_added", "merged"].includes(e.type)) did.add(e.member_id);
     const claimedBy = {};
-    for (const s of state.steps) if (s.status === "claimed") claimedBy[s.claimed_by] = s.id;
+    for (const st of state.steps) if (st.status === "claimed") claimedBy[st.claimed_by] = st.id;
 
-    // What each person's AI is doing right now, in plain words.
+    // Each person: their AI, what it's doing now, and how many steps it solved.
     const person = (m, big) => {
       const pres = m.presence || "new";
       const holds = claimedBy[m.id];
@@ -1375,67 +1494,96 @@
         : pres === "away" ? (holds ? `away · holds #${holds}` : "away")
         : pres === "connected" ? "connected"
         : "not connected";
+      const odd = mismatch(m);
       return h("div", { class: `person ${pres === "working" ? "speaking" : ""} ${pres}` },
         avatarOf(m.id),
         h("div", { class: "pname" }, m.role === "owner" && h("span", { class: "star", title: "host" }, "✳"), h("span", { class: "nm" }, m.name)),
-        m.model && h("div", { class: "pmodel", title: appName(m.app) ? `${m.model} via ${appName(m.app)}` : m.model }, m.model),
-        big && h("div", { class: "pstatus" }, status));
+        m.model && h("div", { class: `pmodel ${odd ? "odd" : ""}`, title: odd ? `Says it's ${m.model}, but connected through ${appName(m.app)}` : appName(m.app) ? `${m.model} via ${appName(m.app)}` : m.model }, odd ? `${m.model} ?` : m.model),
+        big && h("div", { class: "pstatus" }, status),
+        big && solvedBy[m.id] > 0 && h("div", { class: "psolved" }, `✓ ${solvedBy[m.id]} solved`));
     };
     const stage = $("#stage");
     stage.textContent = "";
-    const onStage = active.filter((m) => did.has(m.id) || m.role === "owner");
+    const onStage = active.filter((m) => did.has(m.id) || m.role === "owner" || (m.presence && m.presence !== "new"));
     const quiet = active.filter((m) => !onStage.includes(m));
     onStage.forEach((m) => stage.append(person(m, true)));
     $("#quiet").textContent = "";
     quiet.forEach((m) => $("#quiet").append(person(m, false)));
     $("#quiet-sec").hidden = !quiet.length;
+    renderKnock();
 
     const board = $("#board");
     board.textContent = "";
-    const posts = state.events.filter((e) => e.type === "post");
     const order = { claimed: 0, open: 1, done: 2 };
-    const steps = [...state.steps].sort((a, b) => order[a.status] - order[b.status] || a.id - b.id);
+    const steps = [...state.steps].sort((a, b) => (hidStep(a) - hidStep(b)) || order[a.status] - order[b.status] || a.id - b.id);
+    const hiddenLine = (what, onShow) =>
+      h("div", { class: "hidden-line" }, `${what} hidden by the host`, isOwner() && h("button", { class: "mini", type: "button", onclick: onShow }, "Show"));
     const postEl = (p, step) => {
+      if (hidPost(p)) return hiddenLine("Post", () => hostAct("hide", { kind: "post", ref: p.id, hidden: false }));
       const merged = step && step.merged_event === p.id;
       // Offer Merge on results; on a step with no result yet, on any post.
       const mergeable = step && step.status !== "done" && (p.kind === "result" || !posts.some((q) => q.step_id === step.id && q.kind === "result"));
-      return h("div", { class: `post ${merged ? "merged" : ""}` },
+      return h("div", { class: `post ${merged ? "merged" : ""} ${p.kind}` },
         avatarOf(p.member_id),
         h("div", { class: "bubble" },
           h("div", { class: "by" }, nameOf(p.member_id), mdl(aiFor(p)), h("span", { class: `kind ${p.kind}` }, p.kind === "chat" ? "typed" : p.kind), merged && h("span", {}, "✅ merged"), h("span", {}, ago(p.ts)),
-            isOwner() && mergeable && h("button", {
-              class: "merge-btn", type: "button",
-              onclick: async () => {
-                if (!confirm(`Merge step #${step.id} with this post?`)) return;
-                try {
-                  await api(`/api/r/${roomId}/merge`, { method: "POST", ...withKey, body: JSON.stringify({ step_id: step.id, post_id: p.id }) });
-                  poll();
-                } catch (x) { alert(x.message); }
-              },
-            }, "Merge")),
-          text(p.body)));
+            isOwner() && h("span", { class: "acts" },
+              p.member_id !== state.me?.id && h("button", { class: "mini hide-btn", type: "button", onclick: () => confirm("Hide this post? It stays in the history, but people and AIs won't see it.") && hostAct("hide", { kind: "post", ref: p.id }) }, "Hide"),
+              mergeable && h("button", {
+                class: "merge-btn", type: "button",
+                onclick: async () => {
+                  if (!confirm(`Merge step #${step.id} with this post?`)) return;
+                  hostAct("merge", { step_id: step.id, post_id: p.id });
+                },
+              }, "Merge"))),
+          flagLine(p),
+          longText(p.body)));
     };
-    for (const s of steps) {
+    // Hidden steps fold into one line at the end; a removed person's posts vanish
+    // from the floor entirely (both stay in the history).
+    const hiddenSteps = steps.filter(hidStep);
+    for (const st of steps) {
+      if (hidStep(st)) continue;
       const title = h("span", { class: "st" });
-      title.textContent = s.title;
-      const card = h("div", { class: `step ${s.status}`, "data-step": String(s.id) },
-        h("div", { class: "step-top" }, h("span", { class: "sid" }, `#${s.id}`), title,
-          h("span", { class: `chip ${s.status}` },
-            s.status === "claimed" ? `${who(s.claimed_by)} is on it` : s.status === "done" ? "merged" : "open")),
-        s.detail && text(s.detail, "text detail"));
-      posts.filter((p) => p.step_id === s.id).forEach((p) => card.append(postEl(p, s)));
+      title.textContent = st.title;
+      const winner = st.merged_event && postById.get(st.merged_event);
+      // A held step with no post from its holder for a while opens up for others.
+      const holderPosted = st.status === "claimed" && posts.some((p) => p.step_id === st.id && p.member_id === st.claimed_by && p.ts >= (st.claimed_at || 0));
+      const stale = st.status === "claimed" && st.claimed_at && !holderPosted && Date.now() - st.claimed_at > state.claimStale * 1000;
+      const chipText = st.status === "claimed" ? (stale ? `${who(st.claimed_by)} stalled · open to others` : `${who(st.claimed_by)} is on it`)
+        : st.status === "done" ? (winner ? `solved by ${who(winner.member_id, winner.model)}` : "merged")
+        : "open";
+      const mine = posts.filter((p) => p.step_id === st.id && !hid.members.includes(p.member_id));
+      const showAll = expanded.has(st.id) || mine.length <= 2;
+      const card = h("div", { class: `step ${st.status}`, "data-step": String(st.id) },
+        h("div", { class: "step-top" }, h("span", { class: "sid" }, `#${st.id}`), title,
+          h("span", { class: `chip ${st.status} ${stale ? "stale" : ""}` }, chipText),
+          isOwner() && st.status === "claimed" && h("button", { class: "mini", type: "button", onclick: () => confirm(`Take #${st.id} back from ${nameOf(st.claimed_by)} so someone else can work on it?`) && hostAct("free", { step_id: st.id }) }, "Free"),
+          isOwner() && st.created_by !== state.me?.id && h("button", { class: "mini hide-btn", type: "button", onclick: () => confirm(`Hide step #${st.id}? It stays in the history.`) && hostAct("hide", { kind: "step", ref: st.id }) }, "Hide")),
+        flagLine(flaggedStep.get(st.id)),
+        st.detail && text(st.detail, "text detail"),
+        !showAll && h("button", { class: "mini earlier", type: "button", onclick: () => { expanded.add(st.id); render(); } }, `Show ${mine.length - 2} earlier post${mine.length - 2 === 1 ? "" : "s"}`));
+      (showAll ? mine : mine.slice(-2)).forEach((p) => card.append(postEl(p, st)));
       board.append(card);
     }
-    const loose = posts.filter((p) => !p.step_id);
+    const loose = posts.filter((p) => !p.step_id && !hid.members.includes(p.member_id));
     if (loose.length) {
       const card = h("div", { class: "step" }, h("div", { class: "step-top" }, h("span", { class: "st" }, "Chat"),
         h("button", { class: "mini", type: "button", onclick: chatSheet }, "Open chat")));
       loose.forEach((p) => card.append(postEl(p, null)));
       board.append(card);
     }
+    if (hiddenSteps.length) {
+      const line = h("div", { class: "hidden-line" }, `${hiddenSteps.length} step${hiddenSteps.length === 1 ? "" : "s"} hidden by the host`);
+      if (isOwner())
+        for (const st of hiddenSteps.filter((x) => !hid.members.includes(x.created_by)))
+          line.append(h("button", { class: "mini", type: "button", onclick: () => hostAct("hide", { kind: "step", ref: st.id, hidden: false }) }, `Show #${st.id}`));
+      board.append(h("div", { class: "step hidden-step" }, line));
+    }
     if (!board.children.length) board.append(h("p", { class: "empty" }, "Quiet so far. The first agent to arrive will break the problem into steps."));
     math(board);
-    $("#meta").textContent = `${state.steps.filter((s) => s.status === "done").length}/${state.steps.length} steps merged · ${posts.length} posts`;
+    const shown = liveSteps();
+    $("#meta").textContent = `${shown.filter((s) => s.status === "done").length}/${shown.length} steps merged · ${posts.filter(livePost).length} posts`;
     renderMine();
     renderStart();
     renderTeam();
@@ -1467,6 +1615,9 @@
         state.startMode = d.start_mode;
         state.startedAt = d.started_at;
         state.visibility = d.visibility || "private";
+        state.joinPolicy = d.join_policy || "open";
+        state.hidden = d.hidden || { posts: [], steps: [], members: [] };
+        state.claimStale = d.claim_stale_seconds || 600;
         state.topic = d.topic || "other";
         state.title = d.title;
         const membersChanged = startChanged || JSON.stringify(d.members) !== JSON.stringify(state.members);
@@ -1474,11 +1625,13 @@
         state.members = d.members;
         state.steps = d.steps;
         state.links = d.links || [];
-        if (d.events.length) {
-          state.events.push(...d.events);
-          state.last = d.events[d.events.length - 1].id;
+        // Two polls can overlap (a host action triggers one), so keep only events we don't have yet.
+        const fresh = d.events.filter((e) => e.id > state.last);
+        if (fresh.length) {
+          state.events.push(...fresh);
+          state.last = fresh[fresh.length - 1].id;
         }
-        changed = changed || membersChanged || stepsChanged || d.events.length > 0;
+        changed = changed || membersChanged || stepsChanged || fresh.length > 0;
         if (d.events.length < 500) break;
       }
       if (changed) render();
@@ -1523,7 +1676,7 @@
     }
     // First visit to a join link: show how to connect right away.
     const seenKey = `cuck.seen.${roomId}`;
-    if (mode === "join" && state.me && !localStorage.getItem(seenKey)) {
+    if (mode === "join" && state.me && state.me.role !== "pending" && !localStorage.getItem(seenKey)) {
       localStorage.setItem(seenKey, "1");
       connectSheet(`${origin}/mcp/${roomId}/${key}`);
     }
