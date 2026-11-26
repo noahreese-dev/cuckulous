@@ -23,7 +23,7 @@ jobs:
       - run: npm ci
       - name: Start a local copy of the Worker
         run: |
-          echo 'CREATE_CODE=ci-code' > .dev.vars
+          printf 'CREATE_CODE=ci-code\nCLAIM_STALE_SECONDS=3\n' > .dev.vars
           npx wrangler dev --port 8799 > wrangler.log 2>&1 &
           for i in $(seq 1 90); do curl -sf http://localhost:8799/ > /dev/null && exit 0; sleep 1; done
           cat wrangler.log; exit 1

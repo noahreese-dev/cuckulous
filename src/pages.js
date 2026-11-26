@@ -73,6 +73,7 @@ export const roomPage = (room, mode) =>
     <span class="brief-text" id="brief"></span>
     <span class="hash" id="hash"></span>
   </button>
+  <section id="knock-sec" hidden><div class="knockcard" id="knockcard"></div></section>
   <section id="mine-sec" hidden><div class="minecard" id="minecard"></div></section>
   <section id="start-sec" hidden><div class="startcard" id="startcard"></div></section>
   <section>
@@ -246,7 +247,7 @@ a{color:inherit}
 .by{font-size:12px;font-weight:800;color:var(--mute);display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:2px}
 .kind{padding:0 7px;border-radius:99px;background:var(--hall)}
 .kind.result{background:#E3EBFB;color:var(--blue)}
-.merge-btn{margin-left:auto;background:var(--green);color:#fff;font-weight:800;font-size:12px;padding:3px 10px;border-radius:99px}
+.merge-btn{background:var(--green);color:#fff;font-weight:800;font-size:12px;padding:3px 10px;border-radius:99px}
 .empty{color:var(--mute);font-weight:700}
 
 /* bottom bar */
@@ -446,4 +447,32 @@ details.more{margin:6px 0}details.more summary{cursor:pointer;font-weight:800;co
 .asrow .av{width:30px;height:30px;font-size:11px}
 .linkish{color:var(--blue);font-weight:800;font-size:14px;margin-left:auto}
 .face-pick{font-size:22px}
+/* moderation, flags, solved counts */
+.psolved{font-size:12px;font-weight:900;color:var(--green-d);margin-top:-4px}
+.pmodel.odd{color:#B26A00}
+.flag{font-size:12px;font-weight:800;color:#8A4B00;background:#FFF1DC;border-radius:10px;padding:4px 8px;margin:6px 0 4px}
+.hidden-line{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:var(--mute);background:var(--hall);border-radius:12px;padding:6px 10px;margin-top:10px}
+.hidden-step{padding:8px 12px}
+.hidden-step .hidden-line{margin-top:0}
+.chip.stale{background:#FDE2E0;color:var(--red)}
+.hide-btn{opacity:.7}
+.risky{display:block;white-space:normal;color:#b4541a;font-weight:700}
+.flag-dot{color:#b4541a;font-weight:800}
+.by .acts{margin-left:auto;display:flex;gap:6px;align-items:center}
+.score .nums .flagn b,.score .nums .flagn span{color:#b4541a}
+.mini.earlier{margin-top:10px}
+.knockcard{background:#E8F0FD;border-radius:20px;padding:14px 16px;margin:10px 0 4px}
+.knockcard h3{margin:0 0 2px;font-size:17px;font-weight:900}
+.knockcard p{margin:2px 0 8px;font-size:14px;font-weight:600;color:var(--ink2)}
+.knockcard .ready .nm{flex:1}
+.go.small,.ghost.small{width:auto;margin:0;padding:6px 14px;font-size:13px}
+.ghost.small{background:#fff}
+.score{display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+.score .av{width:34px;height:34px;font-size:12px}
+.score .who b{display:block;font-size:14px;font-weight:800}
+.score .who i{display:block;font-style:normal;font-size:12px;font-weight:700;color:var(--mute)}
+.score .nums{display:flex;gap:12px;text-align:center}
+.score .nums div b{display:block;font-size:16px;font-weight:900;line-height:1.1}
+.score .nums div span{font-size:11px;font-weight:700;color:var(--mute)}
+.score-note{font-size:12px;font-weight:600;color:var(--mute);margin:8px 0 0}
 `;

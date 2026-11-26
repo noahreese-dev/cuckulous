@@ -118,6 +118,7 @@ export default {
         visibility,
         topic: String(b.topic || "other"),
         inviteHash: inviteCode ? await sha256(inviteCode) : null,
+        joinPolicy: b.join_policy === "open" ? "open" : "approve",
       });
       if (r.error) return json(r, 500);
       return json({ room_id: roomId, owner_key: ownerKey, visibility, ...(inviteCode ? { invite_code: inviteCode } : {}) });
@@ -163,7 +164,7 @@ export default {
           inviteHash: KEY_RE.test(invite) ? await sha256(invite) : null,
         });
         if (r.error) return json(r, /invite link|private/.test(r.error) ? 403 : r.error.includes("does not exist") ? 404 : 400);
-        return json({ ok: true, member_key: memberKey });
+        return json({ ok: true, member_key: memberKey, pending: !!r.pending });
       }
       const key = request.headers.get("x-key") || "";
       if (!KEY_RE.test(key)) return json({ error: "Missing or invalid key." }, 403);
@@ -181,7 +182,10 @@ export default {
           const r = await stub.invite(keyHash, name, await sha256(memberKey));
           return r.error ? out(r) : json({ ok: true, member_key: memberKey });
         }
-        if (action === "remove") return out(await stub.remove(keyHash, Number(b.member_id)));
+        if (action === "remove") return out(await stub.remove(keyHash, Number(b.member_id), b.hide === true));
+        if (action === "admit") return out(await stub.admit(keyHash, Number(b.member_id), b.accept === true));
+        if (action === "hide") return out(await stub.hide(keyHash, String(b.kind || ""), Number(b.ref), b.hidden !== false));
+        if (action === "free") return out(await stub.free(keyHash, Number(b.step_id)));
         if (action === "link") return out(await stub.addLink(keyHash, b.title, b.url));
         if (action === "unlink") return out(await stub.removeLink(keyHash, Number(b.link_id)));
         if (action === "step") return out(await stub.addStep(keyHash, b.title, b.detail));
