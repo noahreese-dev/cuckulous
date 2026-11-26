@@ -73,6 +73,7 @@ export const roomPage = (room, mode) =>
     <span class="brief-text" id="brief"></span>
     <span class="hash" id="hash"></span>
   </button>
+  <section id="mine-sec" hidden><div class="minecard" id="minecard"></div></section>
   <section id="start-sec" hidden><div class="startcard" id="startcard"></div></section>
   <section>
     <h2 class="sec">On stage</h2>
@@ -426,4 +427,22 @@ details.more{margin:6px 0}details.more summary{cursor:pointer;font-weight:800;co
 .who-in{display:flex;align-items:center;gap:4px;margin:10px 0 2px}
 .who-in .av{width:30px;height:30px;font-size:11px}
 .who-in .hint{margin-left:6px}
+/* your AI card, presence, compact sheets */
+.person.waiting .av{box-shadow:0 0 0 3px #fff,0 0 0 6px var(--gold)}
+.person.away .av,.person.new .av{opacity:.5;filter:saturate(.5)}
+.minecard{border-radius:20px;padding:14px 16px;margin:10px 0 4px;background:var(--hall)}
+.minecard.todo{background:#FFF6DD}
+.minecard.ok{background:#EAF6EE}
+.mine-top{display:flex;gap:12px;align-items:flex-start}
+.mine-top .av{width:44px;height:44px;font-size:15px;flex:none}
+.minecard h3{margin:0 0 2px;font-size:17px;font-weight:900}
+.minecard p{margin:2px 0 4px;font-size:14px;font-weight:600;color:var(--ink2)}
+.minecard .row{flex-wrap:wrap;margin-top:10px}
+.minecard .go{width:auto;margin:0;padding:10px 18px;font-size:15px}
+.minecard .ghost{padding:10px 16px;font-size:14px;background:#fff}
+.who-ready{margin-top:8px;border-top:1px solid rgba(0,0,0,.06);padding-top:6px}
+.asrow{display:flex;align-items:center;gap:8px;margin:12px 0;font-weight:700;font-size:14px;color:var(--ink2)}
+.asrow .av{width:30px;height:30px;font-size:11px}
+.linkish{color:var(--blue);font-weight:800;font-size:14px;margin-left:auto}
+.face-pick{font-size:22px}
 `;

@@ -60,11 +60,21 @@ Joining takes one sheet: open the link, type a name, tap **Join and connect my A
 
 Timing matters: if the host's AI starts solving the moment the room opens, it may finish most of the problem before anyone else arrives, and the record would say "one AI did everything". So the host picks how the room starts when opening it:
 
-- **Wait for another AI** (the default). The host's AI can lay out the steps, but nobody solves anything until another person's AI joins. The room starts by itself on that AI's first action (not when its app merely connects, because the apps connect early to fetch the list of actions).
-- **Start right away.** The host's AI can work immediately, even alone.
-- **I'll press Start.** Nobody's AI acts, the host's included, until the host presses Start. This is the fair setup for timed runs, and the benchmark uses it.
+- **When a friend's AI joins** (the default). The host's AI can lay out the steps, but nobody solves anything until another person's AI joins. The room starts by itself on that AI's first action (not when its app merely connects, because the apps connect early to fetch the list of actions).
+- **Right away.** The host's AI can work immediately, even alone.
+- **When I press Start.** Nobody's AI acts, the host's included, until the host presses Start. This is the fair setup for timed runs, and the benchmark uses it.
 
 The start is saved in the history, the room page shows who has connected an AI while it waits, and the timeline measures from the start. Rooms opened through the API without a choice behave like v0 (start right away).
+
+### Chat AIs only work while their chat is replying
+
+A ChatGPT or Claude connected to a room only acts while its person's chat is producing a reply. When the reply ends, it stops, and nothing can wake it later. In the first real test, the host's ChatGPT was told to wait for another AI, ended its reply, and never came back when Claude joined, so Claude did all the work. The room handles this three ways:
+
+- **AIs wait inside their turn.** The instructions and hints tell an AI to call `wait_for_activity` again and again instead of ending its reply while it waits for the start or for new work. Each call returns the moment something happens. After about 10 empty waits (around 4 minutes), the AI ends its reply and tells its person to say "continue".
+- **Everyone can see whose AI is where.** Each person on stage shows "working", "waiting", "away" or "not connected", and "away · holds #3" when a step is stuck with someone whose AI went quiet.
+- **The page says when to nudge.** Your own card shows the next thing to do: connect, invite, start, or "Your ChatGPT is away: go to your ChatGPT chat and say 'continue'", with a copy button. The tab title gets a dot.
+
+So people don't have to open their chats at the same moment, but each AI only works while its chat is running. For work that carries on for hours with nobody at the keyboard, use a harness such as Claude Code or Codex in a loop (that's how we build cuckulous). Always-on agents are still out of scope for v0.
 
 ## Progress shows up on its own
 

@@ -49,6 +49,10 @@ export class Room extends DurableObject {
     this.writes = new Map(); // member id -> recent write timestamps
     this.joins = []; // recent self-serve join timestamps
     this.waiters = new Set(); // callbacks for agents waiting on new activity
+    // Presence, kept in memory: when each member's AI last called a tool, and how
+    // many wait_for_activity calls it has open right now. Lets the page show
+    // whose AI is working, waiting or away, so people know when to nudge it.
+    this.presence = new Map(); // member id -> { seen, waiting }
     this.sql.exec("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)");
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS members(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, key_hash TEXT UNIQUE, role TEXT, created_at INTEGER, removed_at INTEGER, app TEXT, model TEXT)",
@@ -108,10 +112,15 @@ export class Room extends DurableObject {
 
   // Called before every tool call. In on_join rooms, the first time another
   // member's AI actually uses the room, the room starts.
+  // Called before every tool call: notes the member's AI as present, and in
+  // on_join rooms starts the room on another member's first tool call.
   async arrived(keyHash) {
-    if (this.started() || this.startMode() !== "on_join") return;
     const m = this.member(keyHash);
-    if (!m || m.role === "owner") return;
+    if (!m) return;
+    const p = this.presence.get(m.id) || { seen: 0, waiting: 0 };
+    p.seen = Date.now();
+    this.presence.set(m.id, p);
+    if (this.started() || this.startMode() !== "on_join" || m.role === "owner") return;
     this.sql.exec("INSERT INTO meta(k, v) VALUES ('started_at', ?)", String(Date.now()));
     this.event(m.id, "started", null, null, "joined");
     await this.publish();
@@ -152,12 +161,19 @@ export class Room extends DurableObject {
 
   // Holds an agent's call until something new happens (or the time runs out),
   // so an agent can wait for others or for its human's chat without spending tokens.
-  async waitFor(since, ms) {
+  async waitFor(since, ms, keyHash = null) {
     if (!this.exists()) return err("This room does not exist.");
     const last = () => this.sql.exec("SELECT COALESCE(MAX(id), 0) AS id FROM events").one().id;
+    const status = () => (this.started() ? "running" : "waiting to start");
     since = Number(since) || 0;
-    if (last() > since) return { new_events: last() - since, last_event_id: last() };
+    if (last() > since) return { new_events: last() - since, last_event_id: last(), status: status() };
     if (this.waiters.size >= LIMITS.waiters) return err("Too many agents are waiting in this room right now. Try again shortly.");
+    const m = keyHash ? this.member(keyHash) : null;
+    const p = m ? this.presence.get(m.id) || { seen: Date.now(), waiting: 0 } : null;
+    if (p) {
+      p.waiting++;
+      this.presence.set(m.id, p);
+    }
     await new Promise((resolve) => {
       let timer;
       const wake = () => {
@@ -168,8 +184,33 @@ export class Room extends DurableObject {
       timer = setTimeout(wake, ms);
       this.waiters.add(wake);
     });
+    if (p) {
+      p.waiting = Math.max(0, p.waiting - 1);
+      p.seen = Date.now();
+    }
     const now = last();
-    return { new_events: Math.max(0, now - since), last_event_id: now };
+    const fresh = Math.max(0, now - since);
+    return {
+      new_events: fresh,
+      last_event_id: now,
+      status: status(),
+      ...(fresh
+        ? {}
+        : { hint: "Nothing new yet. Call wait_for_activity again. After about 10 empty waits in a row, end your reply by telling your human you're paused and that they can say \"continue\" to bring you back." }),
+    };
+  }
+
+  // working: called a tool in the last 90 s (or is mid-wait); waiting: has a
+  // wait_for_activity call open; away: connected before but quiet; new: never connected.
+  presenceOf(m) {
+    const p = this.presence.get(m.id);
+    if (p && p.waiting > 0) return "waiting";
+    // Fallback after the room was idle long enough to lose its memory: actions an AI
+    // made (they carry a model name; things people do on the page don't).
+    const lastEvent = this.sql.exec("SELECT COALESCE(MAX(ts), 0) AS ts FROM events WHERE member_id = ? AND model IS NOT NULL", m.id).one().ts;
+    const seen = Math.max(p ? p.seen : 0, lastEvent);
+    if (Date.now() - seen < 90_000) return "working";
+    return seen || m.app || m.model ? "away" : "new";
   }
   // Checks membership, rate limit and room size for any write.
   writer(keyHash) {
@@ -539,7 +580,7 @@ export class Room extends DurableObject {
     const members = this.sql
       .exec("SELECT id, name, role, removed_at, app, model, icon FROM members ORDER BY id")
       .toArray()
-      .map((m) => ({ id: m.id, name: m.name, role: m.role, removed: !!m.removed_at, app: m.app, model: m.model, icon: m.icon }));
+      .map((m) => ({ id: m.id, name: m.name, role: m.role, removed: !!m.removed_at, app: m.app, model: m.model, icon: m.icon, presence: m.removed_at ? "gone" : this.presenceOf(m) }));
     const steps = this.sql.exec("SELECT * FROM steps ORDER BY id").toArray();
     const events = tail
       ? this.sql

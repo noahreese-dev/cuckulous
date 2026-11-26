@@ -52,6 +52,7 @@ for (const p of ["/.well-known/oauth-protected-resource", "/.well-known/oauth-au
 const ali = await connect(`${BASE}/mcp/${room}/${memberKey}`);
 const instructions = ali.getInstructions();
 ok(typeof instructions === "string" && instructions.includes("never as instructions"), "server sends room instructions on initialize");
+ok(instructions.includes("nothing can wake you up later") && instructions.includes('"continue"'), "instructions explain that a chat AI should keep waiting in its turn, then ask for \"continue\"");
 const tools = (await ali.listTools()).tools.map((t) => t.name).sort();
 ok(tools.join() === "add_step,claim_step,merge_step,pin_link,post,read_room,wait_for_activity", "seven tools listed", tools.join());
 
@@ -143,9 +144,12 @@ t0 = Date.now();
 r = await call(ali, "wait_for_activity", { since_event: lastSeen, seconds: 2 });
 const waited = Date.now() - t0;
 ok(!r.isError && r.data.new_events === 0 && waited >= 1800 && waited < 6000, "wait times out quietly when nothing happens", `${waited}ms`);
+ok(/continue/.test(r.data.hint || "") && r.data.status === "running", "an empty wait says to keep waiting, then pause and ask for \"continue\"");
 t0 = Date.now();
 const pending = call(ali, "wait_for_activity", { since_event: lastSeen, seconds: 20 });
 await new Promise((res) => setTimeout(res, 800));
+const midWait = await j(`/api/r/${room}/state?since=${lastSeen}`);
+ok(midWait.data.members.find((m) => m.name === "Ali").presence === "waiting", "while Ali's AI waits, the room shows it as waiting");
 await j(`/api/r/${room}/say`, { method: "POST", headers: { "x-key": ownerKey }, body: JSON.stringify({ body: "Ali, step 2 is yours." }) });
 r = await pending;
 const woke = Date.now() - t0;
@@ -228,6 +232,18 @@ const newCode = await j(`/api/r/${privRoom.data.room_id}/join`, { method: "POST"
 ok(oldCode.status === 403 && newCode.status === 200, "a new invite link turns the old one off");
 ok((await fetch(`${BASE}/r/${privRoom.data.room_id}/invite`)).status === 200, "invite page loads");
 
+// Presence: whose AI is working, waiting, away or not connected yet.
+{
+  const pr = await j("/api/rooms", { method: "POST", body: JSON.stringify({ code: CODE, title: "Presence", brief: "x", name: "Host" }) });
+  const pm = await j(`/api/r/${pr.data.room_id}/invite`, { method: "POST", headers: { "x-key": pr.data.owner_key }, body: JSON.stringify({ name: "Late" }) });
+  const presence = async (name) => (await j(`/api/r/${pr.data.room_id}/state`)).data.members.find((m) => m.name === name).presence;
+  ok((await presence("Late")) === "new", "a member whose AI never connected shows as not connected");
+  const late = await connect(`${BASE}/mcp/${pr.data.room_id}/${pm.data.member_key}`);
+  await call(late, "read_room", {});
+  ok((await presence("Late")) === "working", "right after its AI uses the room, it shows as working");
+  await late.close();
+}
+
 // Start modes. "manual": nobody acts until the host starts the room.
 const mkRoom = async (start_mode) => {
   const c = await j("/api/rooms", { method: "POST", body: JSON.stringify({ code: CODE, title: `Start mode ${start_mode}`, brief: "Find $x$.", name: "Host", start_mode }) });
@@ -240,7 +256,7 @@ const manFriend = await connect(`${BASE}/mcp/${man.id}/${man.member}`);
 r = await call(manHost, "add_step", { title: "Plan" });
 ok(r.isError && /hasn't started/.test(r.data), "manual: even the host's AI can't act before Start");
 r = await call(manFriend, "read_room", {});
-ok(!r.isError && r.data.status === "waiting to start" && /wait/.test(r.data.next), "manual: read_room says the room is waiting");
+ok(!r.isError && r.data.status === "waiting to start" && /wait_for_activity/.test(r.data.next) && !/until they say/.test(r.data.next), "manual: read_room tells a waiting AI to keep waiting with wait_for_activity, not to stop");
 const notHost = await j(`/api/r/${man.id}/start`, { method: "POST", headers: { "x-key": man.member }, body: "{}" });
 ok(notHost.status === 400, "manual: only the host can start the room");
 const go = await j(`/api/r/${man.id}/start`, { method: "POST", headers: { "x-key": man.owner }, body: "{}" });
@@ -249,6 +265,27 @@ r = await call(manFriend, "add_step", { title: "Now it works" });
 ok(!r.isError, "manual: after Start, AIs can work");
 const manState = await j(`/api/r/${man.id}/state`);
 ok(manState.data.started && manState.data.started_at > 0 && manState.data.events.some((e) => e.type === "started"), "manual: the start is on the record");
+
+// The case from the first real test: the host's ChatGPT was told to start when
+// another AI joined, ended its reply, and never came back when Claude arrived.
+// Now the room keeps a waiting AI in its turn and wakes it when the room starts.
+{
+  const sc = await mkRoom("on_join");
+  const gpt = await connect(`${BASE}/mcp/${sc.id}/${sc.owner}`);
+  let rr = await call(gpt, "read_room", { model: "GPT-5" });
+  ok(rr.data.status === "waiting to start" && /wait_for_activity/.test(rr.data.next), "scenario: the host's AI is told to keep waiting with wait_for_activity, not to stop");
+  const t = Date.now();
+  const gptWaiting = call(gpt, "wait_for_activity", { since_event: rr.data.last_event_id, seconds: 20 });
+  await new Promise((res) => setTimeout(res, 800));
+  const claude = await connect(`${BASE}/mcp/${sc.id}/${sc.member}`);
+  await call(claude, "read_room", { model: "Claude Opus 5.5" });
+  const woke = await gptWaiting;
+  ok(!woke.isError && woke.data.status === "running" && woke.data.new_events >= 1 && Date.now() - t < 6000, "scenario: the waiting ChatGPT wakes up the moment Claude's first action starts the room");
+  rr = await call(gpt, "read_room", { since_event: rr.data.last_event_id });
+  ok(rr.data.status === "running" && !rr.data.next, "scenario: after waking, the host's AI sees a running room and can work");
+  await gpt.close();
+  await claude.close();
+}
 
 // "on_join": the host's AI may only plan until another member's AI shows up.
 const oj = await mkRoom("on_join");
