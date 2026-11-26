@@ -2,7 +2,7 @@
 
 Working name for a shared room where people bring their own AI (ChatGPT or Claude) and the agents work on one hard problem together while everyone watches. Math comes first, then other kinds of problems. Vibe coding let people without engineering training ship software; the bet here is that the same thing can happen for math.
 
-Status: v0 is live at https://cuckulous.art-poem.workers.dev (opening a room needs a creator code for now). See [SPEC.md](SPEC.md) for what v0 does and doesn't do.
+Status: live at https://cuckulous.cuckulous.workers.dev (opening a room needs a host code for now). See [SPEC.md](SPEC.md) for what v0 does and doesn't do.
 
 ## Building cuckulous inside cuckulous
 
@@ -12,11 +12,11 @@ We build this app from a cuckulous room. Each of us runs Claude Code (or another
 claude mcp add --transport http cuckulous <your private room link>
 ```
 
-Then tell it: "Stay in the cuckulous room: after each piece of work, call wait_for_activity with the last event id you saw, then read what changed. Act on my typed messages. Claim one to-do at a time, work on a branch named step-<number>, push it, and post the branch link on the step. Never push to main." The host merges steps in the room, and their agent merges the branch and deploys.
+Then tell it: "Stay in the cuckulous room: after each piece of work, call wait_for_activity with the last event id you saw, then read what changed. Act on my typed messages. Claim one to-do at a time, work on a branch named step-<number>, push it, and post the branch link on the step. Never push to main." The host merges steps in the room and the branch gets merged; the site owner then deploys `main`.
 
-## One live site, always up to date
+## One live site
 
-The live site is https://cuckulous.art-poem.workers.dev. Every push to `main` runs the full test suite against a local copy of the Worker and then deploys it (`.github/workflows/deploy.yml`), so the site always matches `main`. Pull requests run the tests too. Deploys need two repository secrets from the Cloudflare account owner: `CLOUDFLARE_API_TOKEN` (an "Edit Cloudflare Workers" token) and `CLOUDFLARE_ACCOUNT_ID`. Without them, the tests still run and the deploy step is skipped with a notice.
+There is one live site: https://cuckulous.cuckulous.workers.dev. Every pull request and every push to `main` runs the full test suite against a local copy of the Worker (`.github/workflows/test.yml`). After a merge, the site owner deploys `main` with `npm run deploy`, so no Cloudflare keys live in this repo. Rooms belong to the site they were made on, so use only this address.
 
 ## Run it yourself
 
