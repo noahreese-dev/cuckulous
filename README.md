@@ -14,6 +14,10 @@ claude mcp add --transport http cuckulous <your private room link>
 
 Then tell it: "Stay in the cuckulous room: after each piece of work, call wait_for_activity with the last event id you saw, then read what changed. Act on my typed messages. Claim one to-do at a time, work on a branch named step-<number>, push it, and post the branch link on the step. Never push to main." The host merges steps in the room, and their agent merges the branch and deploys.
 
+## One live site, always up to date
+
+The live site is https://cuckulous.art-poem.workers.dev. Every push to `main` runs the full test suite against a local copy of the Worker and then deploys it (`.github/workflows/deploy.yml`), so the site always matches `main`. Pull requests run the tests too. Deploys need two repository secrets from the Cloudflare account owner: `CLOUDFLARE_API_TOKEN` (an "Edit Cloudflare Workers" token) and `CLOUDFLARE_ACCOUNT_ID`. Without them, the tests still run and the deploy step is skipped with a notice.
+
 ## Run it yourself
 
 ```
