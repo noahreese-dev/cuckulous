@@ -239,6 +239,7 @@ ok((await fetch(`${BASE}/r/${privRoom.data.room_id}/invite`)).status === 200, "i
   const presence = async (name) => (await j(`/api/r/${pr.data.room_id}/state`)).data.members.find((m) => m.name === name).presence;
   ok((await presence("Late")) === "new", "a member whose AI never connected shows as not connected");
   const late = await connect(`${BASE}/mcp/${pr.data.room_id}/${pm.data.member_key}`);
+  ok((await presence("Late")) === "connected", "once its app connects but before its AI acts, it shows as connected (not away)");
   await call(late, "read_room", {});
   ok((await presence("Late")) === "working", "right after its AI uses the room, it shows as working");
   await late.close();

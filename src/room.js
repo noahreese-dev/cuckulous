@@ -200,8 +200,9 @@ export class Room extends DurableObject {
     };
   }
 
-  // working: called a tool in the last 90 s (or is mid-wait); waiting: has a
-  // wait_for_activity call open; away: connected before but quiet; new: never connected.
+  // working: called a tool in the last 90 s; waiting: has a wait_for_activity
+  // call open; away: acted before but quiet now; connected: the app connected
+  // but the AI hasn't acted yet; new: never connected.
   presenceOf(m) {
     const p = this.presence.get(m.id);
     if (p && p.waiting > 0) return "waiting";
@@ -210,7 +211,10 @@ export class Room extends DurableObject {
     const lastEvent = this.sql.exec("SELECT COALESCE(MAX(ts), 0) AS ts FROM events WHERE member_id = ? AND model IS NOT NULL", m.id).one().ts;
     const seen = Math.max(p ? p.seen : 0, lastEvent);
     if (Date.now() - seen < 90_000) return "working";
-    return seen || m.app || m.model ? "away" : "new";
+    if (seen || m.model) return "away";
+    // The app has connected (it lists the tools when the connector is added),
+    // but the AI hasn't done anything in the room yet.
+    return m.app ? "connected" : "new";
   }
   // Checks membership, rate limit and room size for any write.
   writer(keyHash) {
