@@ -1,0 +1,31 @@
+# Runs the full test suite against a local copy of the Worker on every pull
+# request and every push to main. Deploying is done by the site owner from
+# main (`npm run deploy`), so no Cloudflare keys are stored in this repo.
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Start a local copy of the Worker
+        run: |
+          echo 'CREATE_CODE=ci-code' > .dev.vars
+          npx wrangler dev --port 8799 > wrangler.log 2>&1 &
+          for i in $(seq 1 90); do curl -sf http://localhost:8799/ > /dev/null && exit 0; sleep 1; done
+          cat wrangler.log; exit 1
+      - name: Run the tests
+        run: BASE=http://localhost:8799 CODE=ci-code npm test

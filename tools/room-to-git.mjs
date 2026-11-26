@@ -30,7 +30,7 @@ if (m) {
   roomId = m[2];
 }
 if (!/^[A-Za-z0-9_-]{16}$/.test(roomId)) throw new Error(`Not a room id: ${roomId}`);
-base ||= "https://cuckulous.art-poem.workers.dev";
+base ||= "https://cuckulous.cuckulous.workers.dev";
 out ||= `room-${roomId}`;
 
 const sha = (s) => createHash("sha256").update(s).digest("hex");
