@@ -430,6 +430,7 @@ details.more{margin:6px 0}details.more summary{cursor:pointer;font-weight:800;co
 /* your AI card, presence, compact sheets */
 .person.waiting .av{box-shadow:0 0 0 3px #fff,0 0 0 6px var(--gold)}
 .person.away .av,.person.new .av{opacity:.5;filter:saturate(.5)}
+.person.connected .av{opacity:.8}
 .minecard{border-radius:20px;padding:14px 16px;margin:10px 0 4px;background:var(--hall)}
 .minecard.todo{background:#FFF6DD}
 .minecard.ok{background:#EAF6EE}

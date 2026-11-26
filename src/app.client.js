@@ -960,6 +960,11 @@
       title = "Connect your AI";
       line = "Add this room to your ChatGPT or Claude, then tell it to start. It takes about two minutes.";
       actions = [connect, invite];
+    } else if (me.presence === "connected") {
+      tone = "todo";
+      title = `Your ${app} is connected`;
+      line = `Now tell it to start: paste this into your ${app} chat.`;
+      actions = [btn("Copy what to say", () => copy(PROMPT, "Copied"), "copy")];
     } else if (!state.started) {
       tone = "wait";
       if (isOwner() && state.startMode === "on_join") {
@@ -1368,6 +1373,7 @@
       const status = pres === "working" ? (holds ? `working on #${holds}` : "working")
         : pres === "waiting" ? "waiting"
         : pres === "away" ? (holds ? `away · holds #${holds}` : "away")
+        : pres === "connected" ? "connected"
         : "not connected";
       return h("div", { class: `person ${pres === "working" ? "speaking" : ""} ${pres}` },
         avatarOf(m.id),
